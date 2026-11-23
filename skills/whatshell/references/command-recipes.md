@@ -23,6 +23,17 @@ whatshell listen --stream-jsonl
 
 Use `sync --once` before reading the local index. Use `listen --stream-jsonl` only when the user wants live events.
 
+Bare `whatshell` (no subcommand) opens a human inbox TUI and holds the store lock. Agents should not use it; prefer the commands above with `--json`.
+
+## Shell Completions
+
+```bash
+whatshell completions bash
+whatshell completions pwsh
+whatshell completions bash --install --dry-run --json
+whatshell completions bash --install
+```
+
 ## Chats And Messages
 
 ```bash

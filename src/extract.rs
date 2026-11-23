@@ -274,8 +274,8 @@ fn media_fields(message: &whatsapp_proto::Message) -> MediaFields {
         return MediaFields {
             kind: Some("contact"),
             caption: contacts.display_name.clone().or_else(|| {
-                Some(format!("{} contacts", contacts.contacts.len()))
-                    .filter(|_| !contacts.contacts.is_empty())
+                (!contacts.contacts.is_empty())
+                    .then(|| format!("{} contacts", contacts.contacts.len()))
             }),
             ..Default::default()
         };

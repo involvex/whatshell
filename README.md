@@ -74,6 +74,21 @@ whatshell --store ~/.whatshell-work sync --once --json
 
 Use `--read-only` when you want Whatshell to reject side-effecting commands.
 
+## Interactive inbox
+
+Running `whatshell` with no subcommand in a TTY opens a live inbox TUI (chat list, thread, compose). It holds the store lock and keeps a live WhatsApp session until you quit (`q` / Ctrl-C). Agents and scripts should keep using subcommands with `--json` instead.
+
+## Shell completions
+
+```bash
+whatshell completions bash
+whatshell completions pwsh
+whatshell completions bash --install
+whatshell completions pwsh --install
+```
+
+`--install` appends (or refreshes) a managed block in `~/.bashrc` or your PowerShell `$PROFILE`. Use `--dry-run` to preview without writing.
+
 ## Whatshell Commands
 
 Sync and listen:

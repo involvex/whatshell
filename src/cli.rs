@@ -25,7 +25,7 @@ pub struct Cli {
     pub verbose: bool,
 
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -45,6 +45,7 @@ pub enum Command {
     Status(StatusCommand),
     Export(ExportCommand),
     Doctor(DoctorCommand),
+    Completions(CompletionsCommand),
 }
 
 #[derive(Debug, Args)]
@@ -927,4 +928,22 @@ pub enum ExportFormat {
 pub struct DoctorCommand {
     #[arg(long)]
     pub connect: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct CompletionsCommand {
+    #[arg(value_enum)]
+    pub shell: CompletionShell,
+
+    #[arg(long)]
+    pub install: bool,
+
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum CompletionShell {
+    Bash,
+    Pwsh,
 }

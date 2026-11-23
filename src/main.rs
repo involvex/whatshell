@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
@@ -5,12 +6,14 @@ use clap::Parser;
 use serde::Serialize;
 
 mod cli;
+mod completions;
 mod config;
 mod extract;
 mod jid;
 mod lock;
 mod output;
 mod store;
+mod tui;
 mod whatshell;
 
 use cli::{
@@ -22,8 +25,25 @@ use config::AppConfig;
 use lock::StoreLock;
 use store::{MessageFilter, Store, StoreStats};
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
+    // Large async command/TUI futures need more than the default Windows thread
+    // stack in debug builds.
+    std::thread::Builder::new()
+        .name("whatshell-main".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime")
+                .block_on(async_main())
+        })
+        .expect("spawn whatshell-main")
+        .join()
+        .expect("whatshell-main thread")
+}
+
+async fn async_main() -> ExitCode {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
 
@@ -45,15 +65,33 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    let json = cli.json;
     let config = AppConfig::new(cli.store, cli.json, cli.timeout, cli.read_only)?;
 
-    match cli.command {
+    // Box large command/TUI futures so their state machines live on the heap.
+    let fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>>>> = match cli.command {
+        None => Box::pin(async move {
+            if json || !std::io::stdout().is_terminal() {
+                return Err(anyhow!(
+                    "no subcommand; pass a command (agents: use --json with a subcommand) or run in a TTY for the inbox TUI"
+                ));
+            }
+            tui::run(config).await
+        }),
+        Some(command) => Box::pin(run_command(config, json, command)),
+    };
+    fut.await
+}
+
+async fn run_command(config: AppConfig, json: bool, command: Command) -> Result<()> {
+    match command {
+        Command::Completions(args) => completions::run(&config, args),
         Command::Auth(args) => match args.command {
             Some(AuthSubcommand::Status) => auth_status(&config),
             Some(AuthSubcommand::Logout) => {
                 let _lock = StoreLock::acquire(&config.lock_path())?;
                 whatshell::logout(config).await?;
-                if cli.json {
+                if json {
                     output::json_response(StatusMessage::new("logged out"))
                 } else {
                     output::print_status("logged out");

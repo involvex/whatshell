@@ -48,7 +48,7 @@ pub enum RunMode {
 }
 
 #[derive(Debug)]
-enum ControlEvent {
+pub(crate) enum ControlEvent {
     Connected,
     PairSuccess,
     NeedsAuth,
@@ -70,7 +70,11 @@ struct StoreWriter {
 }
 
 impl StoreWriter {
-    fn start(config: AppConfig, stream_jsonl: bool) -> Self {
+    fn start(
+        config: AppConfig,
+        stream_jsonl: bool,
+        notify: Option<mpsc::UnboundedSender<MessageRecord>>,
+    ) -> Self {
         let (tx, rx) = std::sync::mpsc::channel::<IndexUpdate>();
         let handle = std::thread::spawn(move || {
             let mut store = Store::open(&config.index_db())?;
@@ -80,12 +84,17 @@ impl StoreWriter {
                     IndexUpdate::Message(message) => {
                         let rowid = store.upsert_message(&message)?;
                         count += 1;
-                        if stream_jsonl {
+                        if stream_jsonl || notify.is_some() {
                             let mut record = store
                                 .show_message(&message.chat_jid, &message.msg_id)?
                                 .ok_or_else(|| anyhow!("message inserted but not found"))?;
                             record.rowid = rowid;
-                            println!("{}", serde_json::to_string(&record)?);
+                            if stream_jsonl {
+                                println!("{}", serde_json::to_string(&record)?);
+                            }
+                            if let Some(notify) = notify.as_ref() {
+                                let _ = notify.send(record);
+                            }
                         }
                     }
                     IndexUpdate::Contact(contact) => {
@@ -104,12 +113,135 @@ impl StoreWriter {
         self.tx.clone()
     }
 
+    fn enqueue_message(&self, message: MessageInsert) -> Result<()> {
+        self.tx
+            .send(IndexUpdate::Message(message))
+            .map_err(|_| anyhow!("store writer closed"))
+    }
+
     fn shutdown(self) -> Result<usize> {
         let _ = self.tx.send(IndexUpdate::Shutdown);
         drop(self.tx);
         self.handle
             .join()
             .map_err(|_| anyhow!("store writer thread panicked"))?
+    }
+}
+
+/// Shared live WhatsApp session for the inbox TUI (one bot, one indexer).
+pub struct LiveSession {
+    config: AppConfig,
+    client: Arc<Client>,
+    bot: Bot,
+    handle: whatsapp_rust::bot::BotHandle,
+    writer: StoreWriter,
+    pub control_rx: mpsc::UnboundedReceiver<ControlEvent>,
+    pub notify_rx: mpsc::UnboundedReceiver<MessageRecord>,
+}
+
+impl LiveSession {
+    pub async fn start(config: AppConfig) -> Result<Self> {
+        config.ensure_dirs()?;
+        let (notify_tx, notify_rx) = mpsc::unbounded_channel();
+        let writer = StoreWriter::start(config.clone(), false, Some(notify_tx));
+        let (control_tx, mut control_rx) = mpsc::unbounded_channel();
+        let (mut bot, client) = build_bot(
+            &config,
+            RunMode::Listen,
+            None,
+            None,
+            Some(writer.sender()),
+            control_tx,
+        )
+        .await?;
+        let handle = bot.run().await?;
+        let timeout = Duration::from_secs(config.timeout_secs);
+        let started = Instant::now();
+        let mut connected = false;
+
+        while !connected {
+            if started.elapsed() >= timeout {
+                client.disconnect().await;
+                handle.abort();
+                let _ = writer.shutdown();
+                return Err(anyhow!(
+                    "timed out connecting to WhatsApp after {} seconds",
+                    timeout.as_secs()
+                ));
+            }
+
+            match tokio::time::timeout(Duration::from_millis(250), control_rx.recv()).await {
+                Ok(Some(ControlEvent::Connected)) => connected = true,
+                Ok(Some(ControlEvent::NeedsAuth)) => {
+                    client.disconnect().await;
+                    handle.abort();
+                    let _ = writer.shutdown();
+                    return Err(anyhow!("not authenticated; run `whatshell auth` first"));
+                }
+                Ok(Some(ControlEvent::LoggedOut)) => {
+                    client.disconnect().await;
+                    handle.abort();
+                    let _ = writer.shutdown();
+                    return Err(anyhow!("WhatsApp session logged out; run `whatshell auth`"));
+                }
+                Ok(Some(_)) | Ok(None) | Err(_) => {}
+            }
+        }
+
+        Ok(Self {
+            config,
+            client,
+            bot,
+            handle,
+            writer,
+            control_rx,
+            notify_rx,
+        })
+    }
+
+    pub async fn send_text(
+        &self,
+        to: &str,
+        message: &str,
+        reply_to: Option<&str>,
+        reply_sender: Option<&str>,
+    ) -> Result<SendSummary> {
+        ensure_can_write(&self.config)?;
+        let to = parse_chat_or_phone(to)?;
+        let reply_sender = reply_sender.map(parse_chat_or_phone).transpose()?;
+        let payload = build_text_message(&to, message, reply_to, reply_sender.as_ref());
+        let sent = self
+            .client
+            .send_message(to.clone(), payload.clone())
+            .await
+            .context("send text message")?;
+        self.writer.enqueue_message(extract::from_outgoing_message(
+            &to.to_string(),
+            &sent,
+            &payload,
+        ))?;
+        Ok(SendSummary {
+            to: to.to_string(),
+            message_id: Some(sent),
+            dry_run: false,
+            kind: "text".into(),
+            message_secret_hex: None,
+        })
+    }
+
+    pub async fn shutdown(self) -> Result<usize> {
+        let _ = tokio::time::timeout(Duration::from_secs(3), self.client.disconnect()).await;
+        let mut handle = self.handle;
+        if tokio::time::timeout(Duration::from_secs(5), &mut handle)
+            .await
+            .is_err()
+        {
+            handle.abort();
+            let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        }
+        drop(self.client);
+        drop(self.bot);
+        self.writer.shutdown()
     }
 }
 
@@ -250,7 +382,7 @@ pub struct GroupParticipantSummary {
 
 pub async fn auth(config: AppConfig, args: AuthCommand) -> Result<()> {
     config.ensure_dirs()?;
-    let writer = StoreWriter::start(config.clone(), false);
+    let writer = StoreWriter::start(config.clone(), false, None);
     let (control_tx, mut control_rx) = mpsc::unbounded_channel();
     let (mut bot, client) = build_bot(
         &config,
@@ -327,7 +459,7 @@ async fn run_capture(
     idle_exit_secs: u64,
 ) -> Result<()> {
     config.ensure_dirs()?;
-    let writer = StoreWriter::start(config.clone(), stream_jsonl);
+    let writer = StoreWriter::start(config.clone(), stream_jsonl, None);
     let (control_tx, mut control_rx) = mpsc::unbounded_channel();
     let (mut bot, client) =
         build_bot(&config, mode, None, None, Some(writer.sender()), control_tx).await?;
@@ -977,7 +1109,7 @@ pub async fn contacts_info(
 }
 
 pub async fn contacts_sync(config: AppConfig) -> Result<ContactSyncSummary> {
-    let writer = StoreWriter::start(config.clone(), false);
+    let writer = StoreWriter::start(config.clone(), false, None);
     let (client, handle) = connect_for_live_command(config.clone(), Some(writer.sender())).await?;
     let sync_timeout = Duration::from_secs(config.timeout_secs.max(30));
     let sync = tokio::time::timeout(

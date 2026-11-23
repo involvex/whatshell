@@ -37,6 +37,7 @@ They must scan the QR code in WhatsApp under Settings > Linked Devices > Link a 
 
 ## Operating Rules
 
+- Prefer subcommands with `--json`. Do not launch the interactive inbox TUI (`whatshell` with no subcommand); it is for humans in a TTY and holds the store lock for the whole session.
 - Use `--json` for commands whose output you need to parse.
 - Use `--store <path>` when the user provides a specific Whatshell store, test profile, or isolated account.
 - Run live Whatshell commands serially per store. Do not parallelize sync, send, contact sync, group, status, profile, blocking, or chat mutation commands against the same store.
@@ -91,7 +92,7 @@ whatshell groups create --subject "<name>" --participant <phone-or-jid> --dry-ru
 
 ## Supported Surface
 
-Whatshell supports authentication, sync/listen, chat and message search, message context, replies, text/media sends, reactions, polls, locations, contact cards, media listing/download, chat archive/pin/mute/read/delete, contact sync/check/info, group listing and administration, presence, profile changes, blocking, status/story posts, exports, and diagnostics.
+Whatshell supports authentication, sync/listen, an interactive inbox TUI (bare `whatshell` in a TTY), shell completions (`completions bash|pwsh [--install]`), chat and message search, message context, replies, text/media sends, reactions, polls, locations, contact cards, media listing/download, chat archive/pin/mute/read/delete, contact sync/check/info, group listing and administration, presence, profile changes, blocking, status/story posts, exports, and diagnostics.
 
 Do not try newsletter/channel commands, community commands, or group join-by-invite commands. They are intentionally not exposed until those WhatsApp Web protocol paths are reliable.
 
