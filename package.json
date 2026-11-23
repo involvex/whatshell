@@ -25,10 +25,10 @@
     "whatshell": "npm/bin/whatshell.js"
   },
   "scripts": {
-    "postinstall": "node npm/install.js",
+    "postinstall": "bun npm/install.js",
     "build": "cargo build --release",
-    "test": "cargo test && node npm/test-install-skills.js",
-    "test:skills": "node npm/test-install-skills.js"
+    "test": "cargo test && bun npm/test-install-skills.js",
+    "test:skills": "bun npm/test-install-skills.js"
   },
   "files": [
     "Cargo.toml",
