@@ -5,15 +5,19 @@ const path = require("node:path");
 const { installAgentSkills } = require("./install-skills");
 
 const root = path.resolve(__dirname, "..");
+const targetDir = process.env.CARGO_TARGET_DIR
+  ? path.resolve(process.env.CARGO_TARGET_DIR)
+  : path.join(root, "target");
 const exe = process.platform === "win32" ? ".exe" : "";
-const source = path.join(root, "target", "release", `whatshell${exe}`);
-const dest = path.join(root, "npm", "bin", `whatshell-${process.platform}-${process.arch}${exe}`);
+const source = path.join(targetDir, "release", `whatshell${exe}`);
+const destDir = path.join(root, "npm", "bin");
+const dest = path.join(destDir, `whatshell-${process.platform}-${process.arch}${exe}`);
 
 if (process.env.WHATSHELL_SKIP_BUILD !== "1") {
   const cargo = spawnSync("cargo", ["build", "--release"], {
     cwd: root,
     stdio: "inherit",
-    env: process.env
+    env: process.env,
   });
 
   if (cargo.error) {
@@ -25,6 +29,13 @@ if (process.env.WHATSHELL_SKIP_BUILD !== "1") {
     process.exit(cargo.status ?? 1);
   }
 
+  if (!fs.existsSync(source)) {
+    console.error(`Built binary not found at ${source}`);
+    console.error("If you set CARGO_TARGET_DIR, ensure it points at the Cargo target directory.");
+    process.exit(1);
+  }
+
+  fs.mkdirSync(destDir, { recursive: true });
   fs.copyFileSync(source, dest);
   fs.chmodSync(dest, 0o755);
 }
