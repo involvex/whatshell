@@ -3,6 +3,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
+use crossterm::terminal::size as terminal_size;
+use image::Luma;
 use qrcode::QrCode;
 use qrcode::render::unicode;
 use serde::Serialize;
@@ -27,7 +29,8 @@ use whatsapp_rust_tokio_transport::TokioWebSocketTransportFactory;
 use whatsapp_rust_ureq_http_client::UreqHttpClient;
 
 use crate::cli::{
-    AuthCommand, SendContact, SendFile, SendLocation, SendPoll, SendReact, SendText, SyncCommand,
+    AuthCommand, QrMode, SendContact, SendFile, SendLocation, SendPoll, SendReact, SendText,
+    SyncCommand,
 };
 use crate::config::AppConfig;
 use crate::extract;
@@ -36,6 +39,7 @@ use crate::output;
 use crate::store::{
     ContactRecord, ContactUpsert, MediaRecord, MessageInsert, MessageRecord, Store,
 };
+use crate::termux::Termux;
 
 use wacore::appstate::patch_decode::WAPatchName;
 
@@ -54,6 +58,68 @@ pub(crate) enum ControlEvent {
     NeedsAuth,
     Stored,
     LoggedOut,
+}
+
+/// How to display the WhatsApp pairing QR code. `human` is false for
+/// `--json` calls, where writing images or opening viewers would be wrong.
+#[derive(Clone, Debug)]
+pub struct QrSettings {
+    pub mode: QrMode,
+    pub output: Option<PathBuf>,
+    pub store_dir: PathBuf,
+    pub termux: Option<Termux>,
+    pub human: bool,
+}
+
+impl Default for QrSettings {
+    fn default() -> Self {
+        Self {
+            mode: QrMode::Auto,
+            output: None,
+            store_dir: PathBuf::new(),
+            termux: None,
+            human: false,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum QrRenderChoice {
+    Wide,
+    Compact,
+    Image,
+}
+
+/// Pick a rendering based on the QR version and the terminal width. Each QR
+/// module needs at least one column; the wide renderer needs two.
+fn choose_qr_render(modules: usize, cols: usize, mode: QrMode) -> QrRenderChoice {
+    let wide_cols = modules.saturating_mul(2).saturating_add(8);
+    let compact_cols = modules.saturating_add(8);
+    match mode {
+        QrMode::Png => QrRenderChoice::Image,
+        QrMode::Terminal => {
+            if wide_cols <= cols {
+                QrRenderChoice::Wide
+            } else {
+                QrRenderChoice::Compact
+            }
+        }
+        QrMode::Auto => {
+            if wide_cols <= cols {
+                QrRenderChoice::Wide
+            } else if compact_cols <= cols {
+                QrRenderChoice::Compact
+            } else {
+                QrRenderChoice::Image
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+enum PairingQr {
+    Terminal(String),
+    Image { path: PathBuf, opened: bool },
 }
 
 #[derive(Debug)]
@@ -152,6 +218,7 @@ impl LiveSession {
             None,
             Some(writer.sender()),
             control_tx,
+            QrSettings::default(),
         )
         .await?;
         let handle = bot.run().await?;
@@ -384,6 +451,13 @@ pub async fn auth(config: AppConfig, args: AuthCommand) -> Result<()> {
     config.ensure_dirs()?;
     let writer = StoreWriter::start(config.clone(), false, None);
     let (control_tx, mut control_rx) = mpsc::unbounded_channel();
+    let qr_settings = QrSettings {
+        mode: args.qr,
+        output: args.qr_output,
+        store_dir: config.store_dir.clone(),
+        termux: config.termux.as_ref().map(|api| (**api).clone()),
+        human: crate::termux::human_interactive(config.json),
+    };
     let (mut bot, client) = build_bot(
         &config,
         RunMode::Auth,
@@ -391,6 +465,7 @@ pub async fn auth(config: AppConfig, args: AuthCommand) -> Result<()> {
         args.code,
         Some(writer.sender()),
         control_tx,
+        qr_settings,
     )
     .await?;
     let handle = bot.run().await?;
@@ -435,6 +510,7 @@ pub async fn auth(config: AppConfig, args: AuthCommand) -> Result<()> {
 }
 
 pub async fn sync(config: AppConfig, args: SyncCommand) -> Result<()> {
+    let notify = !args.no_notify && crate::termux::human_interactive(config.json);
     run_capture(
         config,
         RunMode::Sync,
@@ -442,12 +518,23 @@ pub async fn sync(config: AppConfig, args: SyncCommand) -> Result<()> {
         args.once,
         args.follow || !args.once,
         args.idle_exit,
+        notify,
     )
     .await
 }
 
-pub async fn listen(config: AppConfig, stream_jsonl: bool) -> Result<()> {
-    run_capture(config, RunMode::Listen, stream_jsonl, false, true, 0).await
+pub async fn listen(config: AppConfig, stream_jsonl: bool, no_notify: bool) -> Result<()> {
+    let notify = !no_notify && crate::termux::human_interactive(config.json);
+    run_capture(
+        config,
+        RunMode::Listen,
+        stream_jsonl,
+        false,
+        true,
+        0,
+        notify,
+    )
+    .await
 }
 
 async fn run_capture(
@@ -457,12 +544,26 @@ async fn run_capture(
     once: bool,
     follow: bool,
     idle_exit_secs: u64,
+    notify_enabled: bool,
 ) -> Result<()> {
     config.ensure_dirs()?;
-    let writer = StoreWriter::start(config.clone(), stream_jsonl, None);
+    let notifier = crate::termux::MessageNotifier::new(
+        config.termux.as_ref().map(|termux| (**termux).clone()),
+        notify_enabled,
+    );
+    let (notify_tx, mut notify_rx) = mpsc::unbounded_channel();
+    let writer = StoreWriter::start(config.clone(), stream_jsonl, Some(notify_tx));
     let (control_tx, mut control_rx) = mpsc::unbounded_channel();
-    let (mut bot, client) =
-        build_bot(&config, mode, None, None, Some(writer.sender()), control_tx).await?;
+    let (mut bot, client) = build_bot(
+        &config,
+        mode,
+        None,
+        None,
+        Some(writer.sender()),
+        control_tx,
+        QrSettings::default(),
+    )
+    .await?;
     let handle = bot.run().await?;
     let idle_after = Duration::from_secs(idle_exit_secs.max(1));
     let mut connected = false;
@@ -489,6 +590,17 @@ async fn run_capture(
                     Some(ControlEvent::PairSuccess) | None => {}
                 }
             }
+            Some(record) = notify_rx.recv() => {
+                let label = record.chat_name.clone().unwrap_or_else(|| {
+                    record
+                        .chat_jid
+                        .split('@')
+                        .next()
+                        .unwrap_or(&record.chat_jid)
+                        .to_string()
+                });
+                notifier.note(&label);
+            }
             _ = tokio::time::sleep(Duration::from_secs(1)) => {
                 if connected && !follow && last_activity.elapsed() >= idle_after {
                     client.disconnect().await;
@@ -502,6 +614,7 @@ async fn run_capture(
         }
     }
 
+    notifier.flush();
     let _ = handle.await;
     drop(client);
     drop(bot);
@@ -1901,8 +2014,16 @@ async fn connect_for_live_command(
 ) -> Result<(Arc<Client>, whatsapp_rust::bot::BotHandle)> {
     config.ensure_dirs()?;
     let (control_tx, mut control_rx) = mpsc::unbounded_channel();
-    let (mut bot, client) =
-        build_bot(&config, RunMode::Send, None, None, writer, control_tx).await?;
+    let (mut bot, client) = build_bot(
+        &config,
+        RunMode::Send,
+        None,
+        None,
+        writer,
+        control_tx,
+        QrSettings::default(),
+    )
+    .await?;
     let handle = bot.run().await?;
     let timeout = Duration::from_secs(config.timeout_secs);
     let started = Instant::now();
@@ -2171,6 +2292,7 @@ async fn build_bot(
     code: Option<String>,
     writer: Option<std::sync::mpsc::Sender<IndexUpdate>>,
     control_tx: mpsc::UnboundedSender<ControlEvent>,
+    qr: QrSettings,
 ) -> Result<(Bot, Arc<Client>)> {
     let backend = Arc::new(
         SqliteStore::new(config.session_db().to_string_lossy().as_ref())
@@ -2179,6 +2301,7 @@ async fn build_bot(
     );
 
     let writer_for_handler = writer.clone();
+    let qr_for_handler = qr.clone();
     let mut builder = Bot::builder()
         .with_backend(backend)
         .with_transport_factory(TokioWebSocketTransportFactory::new())
@@ -2188,8 +2311,9 @@ async fn build_bot(
         .on_event(move |event, client| {
             let writer = writer_for_handler.clone();
             let control_tx = control_tx.clone();
+            let qr = qr_for_handler.clone();
             async move {
-                handle_event(mode, event, client, writer, control_tx).await;
+                handle_event(mode, event, client, writer, control_tx, &qr).await;
             }
         });
 
@@ -2216,6 +2340,7 @@ async fn handle_event(
     client: Arc<Client>,
     writer: Option<std::sync::mpsc::Sender<IndexUpdate>>,
     control_tx: mpsc::UnboundedSender<ControlEvent>,
+    qr: &QrSettings,
 ) {
     match event {
         Event::PairingQrCode { code, timeout } => {
@@ -2224,7 +2349,17 @@ async fn handle_event(
                     "Scan this QR in WhatsApp > Linked Devices. Valid for {} seconds.",
                     timeout.as_secs()
                 );
-                eprintln!("{}", render_qr(&code).unwrap_or(code));
+                match render_pairing_qr(&code, qr) {
+                    Ok(PairingQr::Terminal(text)) => eprintln!("{text}"),
+                    Ok(PairingQr::Image { path, opened }) => {
+                        eprintln!("QR image: {}", path.display());
+                        if opened {
+                            eprintln!("opened with termux-open");
+                        }
+                    }
+                    Err(err) => eprintln!("could not render QR: {err:#}"),
+                }
+                eprintln!("pairing payload: {code}");
             } else {
                 let _ = control_tx.send(ControlEvent::NeedsAuth);
                 client.disconnect().await;
@@ -2498,14 +2633,49 @@ fn kind_name(kind: MediaType) -> &'static str {
     }
 }
 
-fn render_qr(code: &str) -> Option<String> {
-    let qr = QrCode::new(code.as_bytes()).ok()?;
-    Some(
-        qr.render::<unicode::Dense1x2>()
-            .quiet_zone(true)
-            .module_dimensions(2, 1)
-            .build(),
-    )
+fn render_pairing_qr(code: &str, settings: &QrSettings) -> Result<PairingQr> {
+    let qr = QrCode::new(code.as_bytes()).context("encode pairing QR")?;
+    let cols = terminal_size()
+        .map(|size| size.0 as usize)
+        .unwrap_or(80)
+        .max(1);
+    let choice = choose_qr_render(qr.width(), cols, settings.mode);
+    match choice {
+        QrRenderChoice::Wide | QrRenderChoice::Compact => {
+            let modules = if choice == QrRenderChoice::Wide { 2 } else { 1 };
+            let text = qr
+                .render::<unicode::Dense1x2>()
+                .quiet_zone(true)
+                .module_dimensions(modules, 1)
+                .build();
+            Ok(PairingQr::Terminal(text))
+        }
+        QrRenderChoice::Image => {
+            let path = settings
+                .output
+                .clone()
+                .unwrap_or_else(|| settings.store_dir.join("pairing-qr.png"));
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("create QR output directory {}", parent.display()))?;
+            }
+            qr.render::<Luma<u8>>()
+                .quiet_zone(true)
+                .module_dimensions(8, 8)
+                .build()
+                .save(&path)
+                .with_context(|| format!("write QR image {}", path.display()))?;
+            let opened = settings.human
+                && settings
+                    .termux
+                    .as_ref()
+                    .is_some_and(|api| api.has("termux-open"));
+            if opened && let Some(api) = settings.termux.as_ref() {
+                api.open(&path.display().to_string());
+            }
+            Ok(PairingQr::Image { path, opened })
+        }
+    }
 }
 
 fn ensure_can_write(config: &AppConfig) -> Result<()> {
@@ -2539,6 +2709,73 @@ fn remove_session_files(config: &AppConfig) -> Result<()> {
 mod tests {
     use super::*;
     use whatsapp_rust::proto_helpers::MessageExt;
+
+    #[test]
+    fn qr_render_fits_wide_terminal() {
+        assert_eq!(
+            choose_qr_render(40, 100, QrMode::Auto),
+            QrRenderChoice::Wide
+        );
+    }
+
+    #[test]
+    fn qr_render_uses_compact_mode_on_phone_width() {
+        assert_eq!(
+            choose_qr_render(40, 60, QrMode::Auto),
+            QrRenderChoice::Compact
+        );
+    }
+
+    #[test]
+    fn qr_render_falls_back_to_image_when_too_narrow() {
+        assert_eq!(
+            choose_qr_render(40, 40, QrMode::Auto),
+            QrRenderChoice::Image
+        );
+    }
+
+    #[test]
+    fn qr_render_png_mode_forces_image() {
+        assert_eq!(
+            choose_qr_render(40, 200, QrMode::Png),
+            QrRenderChoice::Image
+        );
+    }
+
+    #[test]
+    fn qr_terminal_render_produces_block_characters() {
+        let settings = QrSettings {
+            mode: QrMode::Terminal,
+            ..QrSettings::default()
+        };
+        let rendered = render_pairing_qr("1@test-qr", &settings).unwrap();
+        let PairingQr::Terminal(text) = rendered else {
+            panic!("terminal mode must render text");
+        };
+        assert!(text.chars().any(|ch| matches!(ch, '█' | '▀' | '▄')));
+    }
+
+    #[test]
+    fn qr_png_render_writes_an_image_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("qr.png");
+        let settings = QrSettings {
+            mode: QrMode::Png,
+            output: Some(path.clone()),
+            ..QrSettings::default()
+        };
+        let rendered = render_pairing_qr("1@test-qr", &settings).unwrap();
+        let PairingQr::Image {
+            path: written,
+            opened,
+        } = rendered
+        else {
+            panic!("png mode must render an image");
+        };
+        assert_eq!(written, path);
+        assert!(!opened);
+        assert!(path.exists());
+    }
 
     #[test]
     fn dry_text_message_uses_conversation_without_reply() {

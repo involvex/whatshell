@@ -11,6 +11,15 @@ whatshell auth status --json
 whatshell auth logout
 ```
 
+For pairing on a narrow phone terminal:
+
+```bash
+whatshell auth --qr png --qr-output ./pairing-qr.png
+whatshell auth --qr terminal
+```
+
+`--qr auto` (default) picks a wide or compact text render based on terminal width and writes a PNG when the code cannot fit. The raw pairing payload is always printed as a fallback.
+
 `auth logout` removes local session files. The user must revoke a linked device from WhatsApp itself if they want to remove it remotely.
 
 ## Sync And Listen
@@ -24,6 +33,8 @@ whatshell listen --stream-jsonl
 Use `sync --once` before reading the local index. Use `listen --stream-jsonl` only when the user wants live events.
 
 Bare `whatshell` (no subcommand) opens a human inbox TUI and holds the store lock. Agents should not use it; prefer the commands above with `--json`.
+
+On Termux, add `--no-notify` to `listen`/`sync` to suppress phone notifications, and `--no-open` to `media download` to keep the file from launching a viewer. All Termux behavior can be disabled globally with `--termux off`.
 
 ## Shell Completions
 

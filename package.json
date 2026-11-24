@@ -24,11 +24,14 @@
   "bin": {
     "whatshell": "npm/bin/whatshell.js"
   },
+  "packageManager": "bun@1.4.5",
   "scripts": {
     "postinstall": "bun npm/install.js",
     "build": "cargo build --release",
     "test": "cargo test && bun npm/test-install-skills.js",
-    "test:skills": "bun npm/test-install-skills.js"
+    "test:skills": "bun npm/test-install-skills.js",
+    "install:skills": "bun npm/install-skills.js",
+    "install:local": "bun add -g ."
   },
   "files": [
     "Cargo.toml",

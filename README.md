@@ -6,25 +6,25 @@ This is not the WhatsApp Business Cloud API. It links like WhatsApp Web and depe
 
 ## Install
 
-From npm:
+Bun is the configured package manager (1.4.5+, including on Termux / Android). Install globally with bun:
 
 ```bash
-npm install -g whatshell
+bun add -g whatshell
 ```
 
 From this directory:
 
 ```bash
-npm install -g .
+bun add -g .
 ```
 
-The npm `postinstall` script builds the Rust release binary with Cargo and installs a small Node launcher. You can also use Cargo directly:
+The `postinstall` script runs with bun, builds the Rust release binary with Cargo, and installs the launcher plus agent skills. npm still works for consumers who prefer it (`npm install -g whatshell`); the launcher keeps a `node` shebang so npm/CI installs remain compatible. You can also use Cargo directly:
 
 ```bash
 cargo install --path .
 ```
 
-The npm install also installs the Whatshell Agent Skill globally for coding agents:
+The bun/npm install also installs the Whatshell Agent Skill globally for coding agents:
 
 - Claude Code: `~/.claude/skills/whatshell`
 - Codex and OpenCode agent-compatible discovery: `~/.agents/skills/whatshell`
@@ -44,6 +44,15 @@ Phone-number pairing is supported when WhatsApp allows it:
 ```bash
 whatshell auth --phone +15551234567
 ```
+
+QR display adapts to terminal width. On a narrow phone terminal, `--qr auto` (the default) switches to a compact render and falls back to a PNG file when the code cannot fit; `--qr png` always writes an image (default `<store>/pairing-qr.png`, override with `--qr-output <path>`), and `--qr terminal` forces text:
+
+```bash
+whatshell auth --qr png --qr-output ./pairing-qr.png
+whatshell auth --qr terminal
+```
+
+The raw pairing payload is always printed as a fallback, and on Termux a generated PNG is opened with `termux-open` in human TTY sessions.
 
 Status and local logout:
 
@@ -77,6 +86,23 @@ Use `--read-only` when you want Whatshell to reject side-effecting commands.
 ## Interactive inbox
 
 Running `whatshell` with no subcommand in a TTY opens a live inbox TUI (chat list, thread, compose). It holds the store lock and keeps a live WhatsApp session until you quit (`q` / Ctrl-C). Agents and scripts should keep using subcommands with `--json` instead.
+
+## Termux / Android
+
+Termux and its forks (for example `com.involvex.termux_app`) are detected automatically from `TERMUX_VERSION` or the standard `$PREFIX/usr` + sibling `$HOME` layout. When detected, Whatshell uses the Termux:API command-line tools if they are installed:
+
+- `termux-wake-lock` / `termux-wake-unlock` keep long-lived sessions (`auth`, `sync --follow`, `listen`, inbox TUI) alive through Android Doze.
+- `termux-notification` / `termux-toast` report incoming messages and send results.
+- `termux-clipboard-set` copies invite links and downloaded media paths (human TTY sessions only).
+- `termux-open` opens downloaded media; pass `--no-open` to keep the file local.
+
+Missing Termux:API tools are silently skipped, and `--json` / `--stream-jsonl` output is never changed. Clipboard, `termux-open`, and notifications only run in human TTY sessions (not with `--json`); agents can also disable everything with `--termux off` or `WHATSHELL_TERMUX=off`, or force it with `--termux on`. Suppress message notifications with `--no-notify` on `listen` or `sync`. `whatshell doctor --json` reports `termux`, `termux_api`, and the detected `termux_commands`.
+
+Recommended setup: bun 1.4.5 or newer (`bun upgrade`), a Rust toolchain and C compiler (`pkg install rust clang binutils`), and the Termux:API app for the integrations above. For media in shared storage, run `termux-setup-storage` and pass an output path under `~/storage/`. Disable Android battery optimisation for Termux when leaving `sync --follow` or `listen` running; the wake lock prevents CPU sleep but cannot stop the system from killing the app.
+
+For pairing on a narrow screen, prefer `whatshell auth --qr png` and view the saved image with `termux-open`; the compact text renderer is used automatically when the terminal is wide enough.
+
+On a narrow phone screen the inbox TUI shows one pane at a time: `Tab` or `Space` switches panes, `i` or `Enter` composes, `?` opens the key help, and `Esc Esc` or `Shift+Q` quits (soft keyboards have no reliable Ctrl key).
 
 ## Shell completions
 

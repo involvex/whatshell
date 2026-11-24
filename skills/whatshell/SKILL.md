@@ -2,7 +2,7 @@
 name: whatshell
 description: Uses Whatshell, the WhatsApp Web CLI, to safely read, search, summarize, send, reply to, and manage WhatsApp chats from coding agents. Use when a user asks to work with WhatsApp, WhatsApp Web, messages, chats, contacts, groups, media, status, presence, or replies through the terminal.
 license: MIT
-compatibility: Requires the `whatshell` command from the npm package or Cargo install. Works with Claude Code, Codex, OpenCode, and agents that support Agent Skills.
+compatibility: Requires the `whatshell` command from the bun/npm package or Cargo install. Works with Claude Code, Codex, OpenCode, and agents that support Agent Skills.
 metadata:
   package: whatshell
   category: communications
@@ -41,6 +41,8 @@ They must scan the QR code in WhatsApp under Settings > Linked Devices > Link a 
 - Use `--json` for commands whose output you need to parse.
 - Use `--store <path>` when the user provides a specific Whatshell store, test profile, or isolated account.
 - Run live Whatshell commands serially per store. Do not parallelize sync, send, contact sync, group, status, profile, blocking, or chat mutation commands against the same store.
+- On Termux (auto-detected, forks included), Termux:API tools may add notifications, clipboard copies, `termux-open`, and wake locks. These never alter `--json`/`--stream-jsonl` output. Use `--termux off` (or `WHATSHELL_TERMUX=off`) if an agent must disable them, and `--no-notify` / `--no-open` for finer control. Check detection with `whatshell doctor --json`.
+- QR display is width-aware (`auth --qr auto|terminal|png`). On a phone-width terminal, auto falls back to a PNG at `<store>/pairing-qr.png` (override with `--qr-output`); suggest `--qr png` when the user cannot scan the text QR. The raw pairing payload is always printed as a fallback.
 - Do not guess contacts from local files. Use Whatshell contact and chat commands.
 - Prefer `whatshell contacts sync` before contact lookup unless the user explicitly asks for offline-only index reads.
 - Prefer `whatshell sync --once --json` before reading recent chats or messages unless the user intentionally wants the existing local index.
@@ -92,7 +94,7 @@ whatshell groups create --subject "<name>" --participant <phone-or-jid> --dry-ru
 
 ## Supported Surface
 
-Whatshell supports authentication, sync/listen, an interactive inbox TUI (bare `whatshell` in a TTY), shell completions (`completions bash|pwsh [--install]`), chat and message search, message context, replies, text/media sends, reactions, polls, locations, contact cards, media listing/download, chat archive/pin/mute/read/delete, contact sync/check/info, group listing and administration, presence, profile changes, blocking, status/story posts, exports, and diagnostics.
+Whatshell supports authentication (QR with width-aware text/PNG display and phone-number pairing), sync/listen, an interactive inbox TUI (bare `whatshell` in a TTY, with a narrow single-pane layout on phones), optional Termux:API integrations, shell completions (`completions bash|pwsh [--install]`), chat and message search, message context, replies, text/media sends, reactions, polls, locations, contact cards, media listing/download, chat archive/pin/mute/read/delete, contact sync/check/info, group listing and administration, presence, profile changes, blocking, status/story posts, exports, and diagnostics.
 
 Do not try newsletter/channel commands, community commands, or group join-by-invite commands. They are intentionally not exposed until those WhatsApp Web protocol paths are reliable.
 

@@ -17,10 +17,10 @@ Run commands from the repository root (`I:\dev\whatshell`).
 | Command | Purpose |
 | --- | --- |
 | `cargo build` | Build debug binary. |
-| `cargo build --release` | Build release binary (also `npm run build`). |
+| `cargo build --release` | Build release binary (also `bun run build`). |
 | `cargo test` | Run Rust tests (unit + integration tests in `tests/`). |
-| `npm test` | Run Rust tests and Node skill-install tests (`cargo test && node npm/test-install-skills.js`). |
-| `npm run test:skills` | Run only the Node skill-install test. |
+| `bun run test` | Run Rust tests and skill-install tests (`cargo test && bun npm/test-install-skills.js`). |
+| `bun run test:skills` | Run only the skill-install test. |
 | `cargo fmt` | Format Rust code with rustfmt. |
 | `cargo clippy --all-targets --all-features` | Run Rust lints; fix warnings before submitting changes. |
 
@@ -37,20 +37,21 @@ Run commands from the repository root (`I:\dev\whatshell`).
 
 | Command | Purpose |
 | --- | --- |
-| `npm install -g .` | Install locally; runs `npm/install.js` postinstall to build/install the launcher and skills. |
-| `node npm/install.js` | Run the npm postinstall flow manually. |
+| `bun add -g .` | Install locally with bun; runs `bun npm/install.js` postinstall to build/install the launcher and skills. |
+| `bun npm/install.js` | Run the postinstall flow manually. |
+| `npm install -g .` | Alternative npm install; the launcher keeps a `node` shebang for npm/CI compatibility. |
 | `npm publish --provenance --access public` | Publish package (CI uses OIDC trusted publishing on `v*` tags; see `.github/workflows/release.yml`). |
 
 ## Technologies
 
-- **Language:** Rust (Edition 2024), with small Node.js packaging/install scripts.
+- **Language:** Rust (Edition 2024), with small bun-run packaging/install scripts (Node-compatible JS).
 - **CLI:** `clap` derive-based command parsing.
 - **Async runtime:** `tokio`.
 - **WhatsApp protocol/runtime:** `whatsapp-rust`, `wacore`, `wacore-binary`, and related SQLite/transport/HTTP client crates.
 - **Storage:** SQLite via `rusqlite` (bundled) for session/index data; FTS5 used when available for message search.
 - **Serialization/output:** `serde`, `serde_json`; human-readable table output via `comfy-table`.
-- **Testing:** `cargo test`, `assert_cmd`, `predicates`, `tempfile`; Node script tests for skill installation.
-- **Packaging:** npm package (`package.json`) with a Node launcher (`npm/bin/whatshell.js`) and Cargo binary (`src/main.rs`).
+- **Testing:** `cargo test`, `assert_cmd`, `predicates`, `tempfile`; skill-install tests run with bun.
+- **Packaging:** npm-published package (`package.json`, bun 1.4.5 as `packageManager`) with a Node-compatible launcher (`npm/bin/whatshell.js`) and Cargo binary (`src/main.rs`).
 - **CI:** GitHub Actions release workflow (`.github/workflows/release.yml`) builds, tests, verifies tag/version, and publishes to npm with provenance.
 
 ## Project Layout

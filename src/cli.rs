@@ -24,8 +24,26 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     pub verbose: bool,
 
+    /// Enable, disable, or auto-detect Termux integrations.
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        env = "WHATSHELL_TERMUX",
+        default_value = "auto"
+    )]
+    pub termux: TermuxMode,
+
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum TermuxMode {
+    #[default]
+    Auto,
+    On,
+    Off,
 }
 
 #[derive(Debug, Subcommand)]
@@ -64,6 +82,22 @@ pub struct AuthCommand {
 
     #[arg(long)]
     pub follow: bool,
+
+    /// QR pairing display: fit terminal width, force text, or write a PNG.
+    #[arg(long, value_enum, default_value = "auto")]
+    pub qr: QrMode,
+
+    /// Output path for `--qr png` (default: <store>/pairing-qr.png).
+    #[arg(long)]
+    pub qr_output: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum QrMode {
+    #[default]
+    Auto,
+    Terminal,
+    Png,
 }
 
 #[derive(Debug, Subcommand)]
@@ -85,12 +119,20 @@ pub struct SyncCommand {
 
     #[arg(long)]
     pub stream_jsonl: bool,
+
+    /// Suppress Termux notifications for incoming messages.
+    #[arg(long)]
+    pub no_notify: bool,
 }
 
 #[derive(Debug, Args)]
 pub struct ListenCommand {
     #[arg(long)]
     pub stream_jsonl: bool,
+
+    /// Suppress Termux notifications for incoming messages.
+    #[arg(long)]
+    pub no_notify: bool,
 }
 
 #[derive(Debug, Args)]
@@ -717,6 +759,10 @@ pub struct MediaDownload {
 
     #[arg(long)]
     pub overwrite: bool,
+
+    /// Do not open the downloaded file with termux-open on Termux.
+    #[arg(long)]
+    pub no_open: bool,
 }
 
 #[derive(Debug, Args)]

@@ -31,6 +31,9 @@ pub struct App {
     pub reply_to: Option<String>,
     pub reply_sender: Option<String>,
     pub status: String,
+    pub show_help: bool,
+    pub quit_armed: bool,
+    pub terminal_focused: bool,
 }
 
 impl App {
@@ -49,6 +52,9 @@ impl App {
             reply_to: None,
             reply_sender: None,
             status: "connecting…".into(),
+            show_help: false,
+            quit_armed: false,
+            terminal_focused: true,
         };
         app.refresh_chats()?;
         app.set_status("connected");

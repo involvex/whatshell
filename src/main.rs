@@ -13,6 +13,7 @@ mod jid;
 mod lock;
 mod output;
 mod store;
+mod termux;
 mod tui;
 mod whatshell;
 
@@ -24,6 +25,7 @@ use cli::{
 use config::AppConfig;
 use lock::StoreLock;
 use store::{MessageFilter, Store, StoreStats};
+use termux::WakeLock;
 
 fn main() -> ExitCode {
     // Large async command/TUI futures need more than the default Windows thread
@@ -66,7 +68,7 @@ async fn async_main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<()> {
     let json = cli.json;
-    let config = AppConfig::new(cli.store, cli.json, cli.timeout, cli.read_only)?;
+    let config = AppConfig::new(cli.store, cli.json, cli.timeout, cli.read_only, cli.termux)?;
 
     // Box large command/TUI futures so their state machines live on the heap.
     let fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>>>> = match cli.command {
@@ -76,6 +78,7 @@ async fn run(cli: Cli) -> Result<()> {
                     "no subcommand; pass a command (agents: use --json with a subcommand) or run in a TTY for the inbox TUI"
                 ));
             }
+            let _wake = config.termux.as_ref().map(|termux| termux.wake_lock());
             tui::run(config).await
         }),
         Some(command) => Box::pin(run_command(config, json, command)),
@@ -83,7 +86,21 @@ async fn run(cli: Cli) -> Result<()> {
     fut.await
 }
 
+/// Keep long-lived live sessions alive through Android Doze on Termux.
+fn wake_for_command(config: &AppConfig, command: &Command) -> Option<WakeLock> {
+    let live = match command {
+        Command::Auth(args) => args.command.is_none(),
+        Command::Sync(_) | Command::Listen(_) => true,
+        _ => false,
+    };
+    if !live {
+        return None;
+    }
+    config.termux.as_ref().map(|termux| termux.wake_lock())
+}
+
 async fn run_command(config: AppConfig, json: bool, command: Command) -> Result<()> {
+    let _wake = wake_for_command(&config, &command);
     match command {
         Command::Completions(args) => completions::run(&config, args),
         Command::Auth(args) => match args.command {
@@ -109,7 +126,7 @@ async fn run_command(config: AppConfig, json: bool, command: Command) -> Result<
         }
         Command::Listen(args) => {
             let _lock = StoreLock::acquire(&config.lock_path())?;
-            whatshell::listen(config, args.stream_jsonl).await
+            whatshell::listen(config, args.stream_jsonl, args.no_notify).await
         }
         Command::Send(args) => {
             let _lock = StoreLock::acquire(&config.lock_path())?;
@@ -294,10 +311,14 @@ async fn run_command(config: AppConfig, json: bool, command: Command) -> Result<
             }
             GroupsSubcommand::InviteLink(args) => {
                 let _lock = StoreLock::acquire(&config.lock_path())?;
-                print_action_summary(
-                    &config,
-                    whatshell::groups_invite_link(config.clone(), &args.jid, args.reset).await?,
-                )
+                let summary =
+                    whatshell::groups_invite_link(config.clone(), &args.jid, args.reset).await?;
+                if termux::human_interactive(config.json)
+                    && let Some(api) = config.termux.as_deref()
+                {
+                    api.copy(&summary.target);
+                }
+                print_action_summary(&config, summary)
             }
             GroupsSubcommand::InviteInfo(args) => {
                 let _lock = StoreLock::acquire(&config.lock_path())?;
@@ -411,6 +432,14 @@ async fn run_command(config: AppConfig, json: bool, command: Command) -> Result<
                 let summary =
                     whatshell::media_download(config.clone(), media, args.output, args.overwrite)
                         .await?;
+                if termux::human_interactive(config.json)
+                    && let Some(api) = config.termux.as_deref()
+                {
+                    api.copy(&summary.path);
+                    if !args.no_open {
+                        api.open(&summary.path);
+                    }
+                }
                 if config.json {
                     output::json_response(summary)
                 } else {
@@ -972,6 +1001,10 @@ fn auth_status(config: &AppConfig) -> Result<()> {
 }
 
 fn doctor_report(config: &AppConfig) -> Result<DoctorReport> {
+    let (termux, termux_api, termux_commands) = match config.termux.as_deref() {
+        Some(api) => (true, api.is_api_available(), api.tools()),
+        None => (false, false, Vec::new()),
+    };
     Ok(DoctorReport {
         version: env!("CARGO_PKG_VERSION").to_string(),
         store_dir: config.store_dir.display().to_string(),
@@ -980,6 +1013,9 @@ fn doctor_report(config: &AppConfig) -> Result<DoctorReport> {
         session_present: whatshell::has_session(&config.session_db()),
         read_only: config.read_only,
         timeout_secs: config.timeout_secs,
+        termux,
+        termux_api,
+        termux_commands,
         index: try_store_stats(config)?,
     })
 }
@@ -992,6 +1028,11 @@ fn print_doctor_report(report: &DoctorReport) {
     println!("session_present: {}", report.session_present);
     println!("read_only: {}", report.read_only);
     println!("timeout_secs: {}", report.timeout_secs);
+    println!("termux: {}", report.termux);
+    println!("termux_api: {}", report.termux_api);
+    if !report.termux_commands.is_empty() {
+        println!("termux_commands: {}", report.termux_commands.join(", "));
+    }
     if let Some(index) = &report.index {
         println!("chats: {}", index.chats);
         println!("messages: {}", index.messages);
@@ -1100,6 +1141,9 @@ struct DoctorReport {
     session_present: bool,
     read_only: bool,
     timeout_secs: u64,
+    termux: bool,
+    termux_api: bool,
+    termux_commands: Vec<String>,
     index: Option<StoreStats>,
 }
 

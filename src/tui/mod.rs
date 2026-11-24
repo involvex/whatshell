@@ -16,6 +16,7 @@ use ratatui::backend::CrosstermBackend;
 use crate::config::AppConfig;
 use crate::lock::StoreLock;
 use crate::store::Store;
+use crate::termux::MessageNotifier;
 use crate::whatshell::{self, ControlEvent, LiveSession};
 
 use app::{App, Focus, InputMode};
@@ -29,10 +30,15 @@ pub async fn run(config: AppConfig) -> Result<()> {
     let _lock = StoreLock::acquire(&config.lock_path())?;
     let store = Store::open(&config.index_db())?;
     let mut session = LiveSession::start(config.clone()).await?;
+    let notifier = MessageNotifier::new(
+        config.termux.as_ref().map(|termux| (**termux).clone()),
+        true,
+    );
     let mut app = App::new(config, store)?;
 
     let mut terminal = setup_terminal()?;
-    let result = run_loop(&mut terminal, &mut app, &mut session).await;
+    let result = run_loop(&mut terminal, &mut app, &mut session, &notifier).await;
+    notifier.flush();
     let restore = restore_terminal(&mut terminal);
     let shutdown = session.shutdown().await;
     result.and(restore).and(shutdown.map(|_| ()))
@@ -42,9 +48,16 @@ async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
     session: &mut LiveSession,
+    notifier: &MessageNotifier,
 ) -> Result<()> {
+    // Redraw only when something actually changed. Phones are CPU- and
+    // battery-constrained, and a 50 ms full redraw is wasteful when idle.
+    let mut dirty = true;
     loop {
-        terminal.draw(|frame| ui::draw(frame, app))?;
+        if dirty {
+            terminal.draw(|frame| ui::draw(frame, app))?;
+            dirty = false;
+        }
 
         tokio::select! {
             event = session.control_rx.recv() => {
@@ -57,6 +70,7 @@ async fn run_loop(
                     }
                     Some(ControlEvent::Connected) => {
                         app.set_status("connected");
+                        dirty = true;
                     }
                     Some(ControlEvent::Stored) | Some(ControlEvent::PairSuccess) => {}
                     None => {
@@ -66,18 +80,41 @@ async fn run_loop(
             }
             record = session.notify_rx.recv() => {
                 if let Some(record) = record {
+                    let label = record.chat_name.clone().unwrap_or_else(|| {
+                        record
+                            .chat_jid
+                            .split('@')
+                            .next()
+                            .unwrap_or(&record.chat_jid)
+                            .to_string()
+                    });
                     app.on_message(record)?;
+                    if !app.terminal_focused {
+                        notifier.note(&label);
+                    }
+                    dirty = true;
                 }
             }
-            _ = tokio::time::sleep(Duration::from_millis(50)) => {
+            _ = tokio::time::sleep(Duration::from_millis(80)) => {
                 while event::poll(Duration::ZERO)? {
                     match event::read()? {
-                        Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        Event::Key(key)
+                            if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+                        {
                             if handle_key(app, session, key.code, key.modifiers).await? {
                                 return Ok(());
                             }
+                            dirty = true;
                         }
-                        Event::Resize(_, _) => {}
+                        Event::FocusGained => {
+                            app.terminal_focused = true;
+                            dirty = true;
+                        }
+                        Event::FocusLost => {
+                            app.terminal_focused = false;
+                            dirty = true;
+                        }
+                        Event::Resize(_, _) => dirty = true,
                         _ => {}
                     }
                 }
@@ -95,11 +132,19 @@ async fn handle_key(
     if modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('c')) {
         return Ok(true);
     }
+    if app.show_help {
+        app.show_help = false;
+        return Ok(false);
+    }
+    if code != KeyCode::Esc {
+        app.quit_armed = false;
+    }
 
     match app.input_mode {
         InputMode::Normal => match code {
-            KeyCode::Char('q') => return Ok(true),
-            KeyCode::Tab => app.cycle_focus(),
+            KeyCode::Char('q') | KeyCode::Char('Q') => return Ok(true),
+            KeyCode::Tab | KeyCode::Char(' ') => app.cycle_focus(),
+            KeyCode::Char('?') => app.show_help = true,
             KeyCode::Char('/') if app.focus == Focus::Chats => {
                 app.input_mode = InputMode::Filter;
                 app.filter.clear();
@@ -115,8 +160,17 @@ async fn handle_key(
                 }
             }
             KeyCode::Esc => {
-                app.clear_reply();
-                app.set_status("ready");
+                if app.quit_armed {
+                    return Ok(true);
+                }
+                if app.reply_to.is_some() {
+                    app.clear_reply();
+                    app.set_status("ready");
+                } else {
+                    // Soft keyboards have no reliable Ctrl key: two Escs quit.
+                    app.quit_armed = true;
+                    app.set_status("press Esc again to quit");
+                }
             }
             KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1)?,
             KeyCode::Down | KeyCode::Char('j') => app.move_selection(1)?,
@@ -168,12 +222,20 @@ async fn handle_key(
                             app.clear_reply();
                             app.input_mode = InputMode::Normal;
                             app.focus = Focus::Messages;
-                            app.set_status(format!(
-                                "sent {}",
-                                summary.message_id.as_deref().unwrap_or("ok")
-                            ));
+                            let status =
+                                format!("sent {}", summary.message_id.as_deref().unwrap_or("ok"));
+                            if let Some(api) = app.config.termux.as_deref() {
+                                api.toast(&status);
+                            }
+                            app.set_status(status);
                         }
-                        Err(err) => app.set_status(format!("send failed: {err:#}")),
+                        Err(err) => {
+                            let status = format!("send failed: {err:#}");
+                            if let Some(api) = app.config.termux.as_deref() {
+                                api.toast(&status);
+                            }
+                            app.set_status(status);
+                        }
                     }
                 }
             }

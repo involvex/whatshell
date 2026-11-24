@@ -1,8 +1,12 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
+
+use crate::cli::TermuxMode;
+use crate::termux::Termux;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -10,6 +14,7 @@ pub struct AppConfig {
     pub json: bool,
     pub timeout_secs: u64,
     pub read_only: bool,
+    pub termux: Option<Arc<Termux>>,
 }
 
 impl AppConfig {
@@ -18,6 +23,7 @@ impl AppConfig {
         json: bool,
         timeout_secs: u64,
         read_only: bool,
+        termux_mode: TermuxMode,
     ) -> Result<Self> {
         let store_dir = match store_dir {
             Some(path) => path,
@@ -28,6 +34,7 @@ impl AppConfig {
             json,
             timeout_secs,
             read_only,
+            termux: Termux::resolve(termux_mode).map(Arc::new),
         })
     }
 

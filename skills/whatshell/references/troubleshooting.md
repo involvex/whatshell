@@ -1,5 +1,9 @@
 # Whatshell Troubleshooting
 
+## QR Pairing On Narrow Screens
+
+If the text QR wraps or is unscannable, use `whatshell auth --qr png --qr-output ./pairing-qr.png` and open it with `termux-open ./pairing-qr.png` on Termux. `--qr terminal` forces text, and `--qr auto` (default) chooses a compact render or a PNG based on the terminal width. The raw pairing payload printed after the QR can also be used as a fallback.
+
 ## Authentication Failures
 
 Run:
@@ -10,6 +14,10 @@ whatshell doctor --json
 ```
 
 If the session is missing or logged out, ask the user to run `whatshell auth` and scan the QR code from WhatsApp Linked Devices.
+
+## Termux (Android)
+
+`whatshell doctor --json` reports `termux`, `termux_api`, and `termux_commands`. If detection is wrong, set `WHATSHELL_TERMUX=on` or `WHATSHELL_TERMUX=off` (or pass `--termux on|off`). Notifications, clipboard copies, `termux-open`, and wake locks are best-effort: each requires the corresponding Termux:API command in `PATH` and silently does nothing if it is missing. Excessive notifications can be disabled with `--no-notify` on `listen`/`sync`; unwanted media opening with `--no-open` on `media download`. These integrations never write to stdout, so JSON/JSONL consumers are unaffected.
 
 ## Store Locks
 
